@@ -1,63 +1,57 @@
-//! Example 01. Simple scene.
-//!
-//! Difficulty: Easy.
-//!
-//! This example shows how to create simple scene with animated model.
+// Copyright (c) 2019-present Dmitry Stepanov and Fyrox Engine contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
-pub mod shared;
-
-use crate::shared::create_camera;
-use rg3d::{
+use fyrox_graph::SceneGraph;
+use fyrox_impl::{
+    asset::manager::ResourceManager,
     core::{
-        algebra::{Matrix4, UnitQuaternion, Vector2, Vector3},
+        algebra::{Matrix4, Point3, UnitQuaternion, Vector2, Vector3},
         arrayvec::ArrayVec,
         color::Color,
-        math::PositionProvider,
         pool::Handle,
+        sstorage::ImmutableString,
     },
     dpi::LogicalPosition,
-    engine::{resource_manager::MaterialSearchOptions, resource_manager::ResourceManager},
-    event::{ElementState, Event, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    gui::{
-        message::{MessageDirection, TextMessage},
-        node::StubNode,
-        text::TextBuilder,
-        widget::WidgetBuilder,
-    },
-    material::{Material, PropertyValue},
+    engine::{executor::Executor, GraphicsContext, GraphicsContextParams},
+    event::{ElementState, Event, WindowEvent},
+    event_loop::EventLoop,
+    keyboard::KeyCode,
+    material::{Material, MaterialResource, PropertyValue},
+    plugin::{Plugin, PluginConstructor, PluginContext},
+    resource::model::{Model, ModelResourceExtension},
     scene::{
         base::BaseBuilder,
+        camera::CameraBuilder,
         debug::Line,
+        graph::physics::{Intersection, RayCastOptions},
         mesh::{
-            surface::{SurfaceBuilder, SurfaceData},
+            surface::{SurfaceBuilder, SurfaceData, SurfaceSharedData},
             MeshBuilder,
         },
-        node::Node,
-        physics::{Intersection, RayCastOptions},
+        node::{Node, NodeTrait},
         transform::TransformBuilder,
         Scene,
     },
-    utils::{
-        log::{Log, MessageKind},
-        navmesh::NavmeshAgent,
-        translate_event,
-    },
+    utils::navmesh::NavmeshAgent,
 };
-use std::{
-    sync::{Arc, Mutex, RwLock},
-    time::Instant,
-};
-
-// Create our own engine type aliases. These specializations are needed
-// because engine provides a way to extend UI with custom nodes and messages.
-type GameEngine = rg3d::engine::Engine<(), StubNode>;
-type UiNode = rg3d::gui::node::UINode<(), StubNode>;
-type BuildContext<'a> = rg3d::gui::BuildContext<'a, (), StubNode>;
-
-fn create_ui(ctx: &mut BuildContext) -> Handle<UiNode> {
-    TextBuilder::new(WidgetBuilder::new()).build(ctx)
-}
+use winit::keyboard::PhysicalKey;
 
 struct GameScene {
     scene: Scene,
@@ -69,16 +63,15 @@ struct GameScene {
 async fn create_scene(resource_manager: ResourceManager) -> GameScene {
     let mut scene = Scene::new();
 
-    // Set ambient light.
-    scene.ambient_lighting_color = Color::opaque(200, 200, 200);
-
     // Camera is our eyes in the world - you won't see anything without it.
-    let camera = create_camera(
-        resource_manager.clone(),
-        Vector3::new(0.0, 5.0, 0.0),
-        &mut scene.graph,
+    let camera = CameraBuilder::new(
+        BaseBuilder::new().with_local_transform(
+            TransformBuilder::new()
+                .with_local_position(Vector3::new(0.0, 5.0, 0.0))
+                .build(),
+        ),
     )
-    .await;
+    .build(&mut scene.graph);
 
     scene.graph[camera]
         .local_transform_mut()
@@ -88,34 +81,34 @@ async fn create_scene(resource_manager: ResourceManager) -> GameScene {
         ));
 
     resource_manager
-        .request_model(
-            "examples/data/navmesh_scene.rgs",
-            MaterialSearchOptions::RecursiveUp,
-        )
+        .request::<Model>("examples/data/navmesh_scene.rgs")
         .await
         .unwrap()
-        .instantiate_geometry(&mut scene);
+        .instantiate(&mut scene);
 
     let mut cursor_material = Material::standard();
     cursor_material
         .set_property(
-            "diffuseColor",
+            &ImmutableString::new("diffuseColor"),
             PropertyValue::Color(Color::opaque(255, 0, 0)),
         )
         .unwrap();
 
     let cursor = MeshBuilder::new(BaseBuilder::new())
-        .with_surfaces(vec![SurfaceBuilder::new(Arc::new(RwLock::new(
+        .with_surfaces(vec![SurfaceBuilder::new(SurfaceSharedData::new(
             SurfaceData::make_sphere(10, 10, 0.1, &Matrix4::identity()),
-        )))
-        .with_material(Arc::new(Mutex::new(cursor_material)))
+        ))
+        .with_material(MaterialResource::new_ok(
+            Default::default(),
+            cursor_material,
+        ))
         .build()])
         .build(&mut scene.graph);
 
     let mut agent_material = Material::standard();
     agent_material
         .set_property(
-            "diffuseColor",
+            &ImmutableString::new("diffuseColor"),
             PropertyValue::Color(Color::opaque(0, 200, 0)),
         )
         .unwrap();
@@ -127,10 +120,10 @@ async fn create_scene(resource_manager: ResourceManager) -> GameScene {
                 .build(),
         ),
     )
-    .with_surfaces(vec![SurfaceBuilder::new(Arc::new(RwLock::new(
+    .with_surfaces(vec![SurfaceBuilder::new(SurfaceSharedData::new(
         SurfaceData::make_sphere(10, 10, 0.2, &Matrix4::identity()),
-    )))
-    .with_material(Arc::new(Mutex::new(agent_material)))
+    ))
+    .with_material(MaterialResource::new_ok(Default::default(), agent_material))
     .build()])
     .build(&mut scene.graph);
 
@@ -142,210 +135,154 @@ async fn create_scene(resource_manager: ResourceManager) -> GameScene {
     }
 }
 
+#[derive(Default)]
 struct InputController {
     rotate_left: bool,
     rotate_right: bool,
 }
 
-fn main() {
-    let event_loop = EventLoop::new();
+struct Game {
+    input_controller: InputController,
+    scene_handle: Handle<Scene>,
+    agent: Handle<Node>,
+    cursor: Handle<Node>,
+    camera: Handle<Node>,
+    target_position: Vector3<f32>,
+    mouse_position: Vector2<f32>,
+    navmesh_agent: NavmeshAgent,
+}
 
-    let window_builder = rg3d::window::WindowBuilder::new()
-        .with_title("Example 12 - Navigation Mesh")
-        .with_resizable(true);
+impl Plugin for Game {
+    fn update(&mut self, context: &mut PluginContext) {
+        // Use stored scene handle to borrow a mutable reference of scene in
+        // engine.
+        let scene = &mut context.scenes[self.scene_handle];
 
-    let mut engine = GameEngine::new(window_builder, &event_loop, true).unwrap();
+        scene.drawing_context.clear_lines();
 
-    // Create simple user interface that will show some useful info.
-    let debug_text = create_ui(&mut engine.user_interface.build_ctx());
+        if let GraphicsContext::Initialized(ref graphics_context) = context.graphics_context {
+            let ray = scene.graph[self.camera].as_camera().make_ray(
+                self.mouse_position,
+                graphics_context.renderer.get_frame_bounds(),
+            );
 
-    // Create test scene.
-    let GameScene {
-        scene,
-        agent,
-        cursor,
-        camera,
-    } = rg3d::core::futures::executor::block_on(create_scene(engine.resource_manager.clone()));
+            let mut buffer = ArrayVec::<Intersection, 64>::new();
+            scene.graph.physics.cast_ray(
+                RayCastOptions {
+                    ray_origin: Point3::from(ray.origin),
+                    ray_direction: ray.dir,
+                    max_len: 9999.0,
+                    groups: Default::default(),
+                    sort_results: true,
+                },
+                &mut buffer,
+            );
 
-    // Add scene to engine - engine will take ownership over scene and will return
-    // you a handle to scene which can be used later on to borrow it and do some
-    // actions you need.
-    let scene_handle = engine.scenes.add(scene);
-
-    let clock = Instant::now();
-    let fixed_timestep = 1.0 / 60.0;
-    let mut elapsed_time = 0.0;
-
-    // Create input controller - it will hold information about needed actions.
-    let mut input_controller = InputController {
-        rotate_left: false,
-        rotate_right: false,
-    };
-
-    let mut mouse_position = Vector2::default();
-
-    let mut navmesh_agent = NavmeshAgent::new();
-    navmesh_agent.set_speed(0.75);
-    let mut target_position = Vector3::default();
-
-    // Finally run our event loop which will respond to OS and window events and update
-    // engine state accordingly. Engine lets you to decide which event should be handled,
-    // this is minimal working example if how it should be.
-    event_loop.run(move |event, _, control_flow| {
-        match event {
-            Event::MainEventsCleared => {
-                // This main game loop - it has fixed time step which means that game
-                // code will run at fixed speed even if renderer can't give you desired
-                // 60 fps.
-                let mut dt = clock.elapsed().as_secs_f32() - elapsed_time;
-                while dt >= fixed_timestep {
-                    dt -= fixed_timestep;
-                    elapsed_time += fixed_timestep;
-
-                    // ************************
-                    // Put your game logic here.
-                    // ************************
-
-                    // Use stored scene handle to borrow a mutable reference of scene in
-                    // engine.
-                    let scene = &mut engine.scenes[scene_handle];
-
-                    scene.drawing_context.clear_lines();
-
-                    let ray = scene.graph[camera]
-                        .as_camera()
-                        .make_ray(mouse_position, engine.renderer.get_frame_bounds());
-
-                    let mut buffer = ArrayVec::<Intersection, 64>::new();
-                    scene.physics.cast_ray(
-                        RayCastOptions {
-                            ray,
-                            max_len: 9999.0,
-                            groups: Default::default(),
-                            sort_results: true,
-                        },
-                        &mut buffer,
-                    );
-
-                    if let Some(first) = buffer.first() {
-                        target_position = first.position.coords;
-                        scene.graph[cursor]
-                            .local_transform_mut()
-                            .set_position(target_position);
-                    }
-
-                    let navmesh = scene.navmeshes.iter_mut().next().unwrap();
-
-                    let last = std::time::Instant::now();
-                    navmesh_agent.set_target(target_position);
-                    let _ = navmesh_agent.update(fixed_timestep, navmesh);
-                    let agent_time = std::time::Instant::now() - last;
-
-                    scene.graph[agent]
-                        .local_transform_mut()
-                        .set_position(navmesh_agent.position());
-
-                    // Debug drawing.
-
-                    for pt in navmesh.vertices() {
-                        for neighbour in pt.neighbours() {
-                            scene.drawing_context.add_line(Line {
-                                begin: pt.position(),
-                                end: navmesh.vertices()[*neighbour as usize].position(),
-                                color: Color::opaque(0, 0, 200),
-                            });
-                        }
-                    }
-
-                    for pts in navmesh_agent.path().windows(2) {
-                        scene.drawing_context.add_line(Line {
-                            begin: pts[0],
-                            end: pts[1],
-                            color: Color::opaque(255, 0, 0),
-                        });
-                    }
-
-                    let fps = engine.renderer.get_statistics().frames_per_second;
-                    let text = format!(
-                        "Example 12 - Navigation Mesh\nFPS: {}\nAgent time: {:?}",
-                        fps, agent_time
-                    );
-                    engine.user_interface.send_message(TextMessage::text(
-                        debug_text,
-                        MessageDirection::ToWidget,
-                        text,
-                    ));
-
-                    engine.update(fixed_timestep);
-                }
-
-                // It is very important to "pump" messages from UI. Even if don't need to
-                // respond to such message, you should call this method, otherwise UI
-                // might behave very weird.
-                while let Some(_ui_event) = engine.user_interface.poll_message() {
-                    // ************************
-                    // Put your data model synchronization code here. It should
-                    // take message and update data in your game according to
-                    // changes in UI.
-                    // ************************
-                }
-
-                // Rendering must be explicitly requested and handled after RedrawRequested event is received.
-                engine.get_window().request_redraw();
+            if let Some(first) = buffer.first() {
+                self.target_position = first.position.coords;
+                scene.graph[self.cursor]
+                    .local_transform_mut()
+                    .set_position(self.target_position);
             }
-            Event::RedrawRequested(_) => {
-                // Run renderer at max speed - it is not tied to game code.
-                engine.render().unwrap();
-            }
-            Event::WindowEvent { event, .. } => {
-                match event {
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                    WindowEvent::Resized(size) => {
-                        // It is very important to handle Resized event from window, because
-                        // renderer knows nothing about window size - it must be notified
-                        // directly when window size has changed.
-                        if let Err(e) = engine.renderer.set_frame_size(size.into()) {
-                            Log::writeln(
-                                MessageKind::Error,
-                                format!("Unable to set frame size: {:?}", e),
-                            );
-                        }
+        }
+
+        let navmesh_handle = scene.graph.find_by_name_from_root("Navmesh").unwrap().0;
+        let navmesh_node = scene.graph[navmesh_handle].as_navigational_mesh_mut();
+        navmesh_node.debug_draw(&mut scene.drawing_context);
+        let navmesh = navmesh_node.navmesh_ref();
+
+        self.navmesh_agent.set_target(self.target_position);
+        let _ = self.navmesh_agent.update(context.dt, &navmesh);
+        drop(navmesh);
+
+        scene.graph[self.agent]
+            .local_transform_mut()
+            .set_position(self.navmesh_agent.position());
+
+        for pts in self.navmesh_agent.path().windows(2) {
+            scene.drawing_context.add_line(Line {
+                begin: pts[0],
+                end: pts[1],
+                color: Color::opaque(255, 0, 0),
+            });
+        }
+    }
+
+    fn on_os_event(&mut self, event: &Event<()>, context: PluginContext) {
+        if let Event::WindowEvent { event, .. } = event {
+            match event {
+                WindowEvent::KeyboardInput { event: input, .. } => match input.physical_key {
+                    PhysicalKey::Code(KeyCode::KeyA) => {
+                        self.input_controller.rotate_left = input.state == ElementState::Pressed
                     }
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        // Handle key input events via `WindowEvent`, not via `DeviceEvent` (#32)
-                        if let Some(key_code) = input.virtual_keycode {
-                            match key_code {
-                                VirtualKeyCode::A => {
-                                    input_controller.rotate_left =
-                                        input.state == ElementState::Pressed
-                                }
-                                VirtualKeyCode::D => {
-                                    input_controller.rotate_right =
-                                        input.state == ElementState::Pressed
-                                }
-                                _ => (),
-                            }
-                        }
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        let p: LogicalPosition<f32> =
-                            position.to_logical(engine.get_window().scale_factor());
-                        mouse_position = Vector2::new(p.x as f32, p.y as f32);
+                    PhysicalKey::Code(KeyCode::KeyD) => {
+                        self.input_controller.rotate_right = input.state == ElementState::Pressed
                     }
                     _ => (),
+                },
+                WindowEvent::CursorMoved { position, .. } => {
+                    if let GraphicsContext::Initialized(ref graphics_context) =
+                        context.graphics_context
+                    {
+                        let p: LogicalPosition<f32> =
+                            position.to_logical(graphics_context.window.scale_factor());
+                        self.mouse_position = Vector2::new(p.x, p.y);
+                    }
                 }
-
-                // It is very important to "feed" user interface (UI) with events coming
-                // from main window, otherwise UI won't respond to mouse, keyboard, or any
-                // other event.
-                if let Some(os_event) = translate_event(&event) {
-                    engine.user_interface.process_os_event(&os_event);
-                }
+                _ => (),
             }
-            Event::DeviceEvent { .. } => {
-                // Handle key input events via `WindowEvent`, not via `DeviceEvent` (#32)
-            }
-            _ => *control_flow = ControlFlow::Poll,
         }
-    });
+    }
+}
+
+struct GameConstructor;
+
+impl PluginConstructor for GameConstructor {
+    fn create_instance(
+        &self,
+        _override_scene: Option<&str>,
+        context: PluginContext,
+    ) -> Box<dyn Plugin> {
+        // Create test scene.
+        let GameScene {
+            scene,
+            agent,
+            cursor,
+            camera,
+        } = fyrox::core::futures::executor::block_on(create_scene(
+            context.resource_manager.clone(),
+        ));
+
+        // Add scene to engine - engine will take ownership over scene and will return
+        // you a handle to scene which can be used later on to borrow it and do some
+        // actions you need.
+        let scene_handle = context.scenes.add(scene);
+
+        let mut navmesh_agent = NavmeshAgent::new();
+        navmesh_agent.set_speed(0.75);
+
+        Box::new(Game {
+            input_controller: Default::default(),
+            scene_handle,
+            agent,
+            cursor,
+            camera,
+            target_position: Default::default(),
+            mouse_position: Default::default(),
+            navmesh_agent,
+        })
+    }
+}
+
+fn main() {
+    let mut executor = Executor::from_params(
+        EventLoop::new().unwrap(),
+        GraphicsContextParams {
+            window_attributes: Default::default(),
+            vsync: true,
+            msaa_sample_count: None,
+        },
+    );
+    executor.add_plugin_constructor(GameConstructor);
+    executor.run()
 }

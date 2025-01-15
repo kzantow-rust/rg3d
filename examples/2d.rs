@@ -1,79 +1,132 @@
+// Copyright (c) 2019-present Dmitry Stepanov and Fyrox Engine contributors.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //! Example - 2D
 //!
 //! Difficulty: Easy.
 //!
 //! This example shows simple 2D scene with light sources.
 
-use rg3d::{
-    core::{algebra::Vector2, pool::Handle},
-    engine::{framework::prelude::*, resource_manager::ResourceManager},
-    event::{ElementState, VirtualKeyCode, WindowEvent},
-    event_loop::ControlFlow,
-    gui::{
-        message::{MessageDirection, TextMessage},
-        text::TextBuilder,
-        widget::WidgetBuilder,
+use fyrox_impl::{
+    asset::manager::ResourceManager,
+    core::{
+        algebra::{UnitQuaternion, Vector3},
+        pool::Handle,
+        sstorage::ImmutableString,
     },
-    scene2d::{
-        base::BaseBuilder, camera::CameraBuilder, light::point::PointLightBuilder,
-        light::spot::SpotLightBuilder, light::BaseLightBuilder, node::Node, sprite::SpriteBuilder,
-        transform::TransformBuilder, Scene2d,
+    engine::{executor::Executor, GraphicsContextParams},
+    event::{ElementState, Event, WindowEvent},
+    event_loop::EventLoop,
+    material::{Material, MaterialResource, PropertyValue},
+    plugin::{Plugin, PluginConstructor, PluginContext},
+    resource::texture::Texture,
+    scene::{
+        base::BaseBuilder,
+        camera::{CameraBuilder, OrthographicProjection, Projection},
+        dim2::rectangle::RectangleBuilder,
+        light::{point::PointLightBuilder, spot::SpotLightBuilder, BaseLightBuilder},
+        node::Node,
+        transform::TransformBuilder,
+        Scene,
     },
 };
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 struct SceneLoader {
-    scene: Scene2d,
+    scene: Scene,
     camera: Handle<Node>,
     spot_light: Handle<Node>,
 }
 
 impl SceneLoader {
     fn load_with(resource_manager: ResourceManager) -> Self {
-        let mut scene = Scene2d::new();
+        let mut scene = Scene::new();
 
         // Create camera first.
-        let camera = CameraBuilder::new(BaseBuilder::new()).build(&mut scene.graph);
+        let camera = CameraBuilder::new(BaseBuilder::new())
+            .with_projection(Projection::Orthographic(OrthographicProjection {
+                z_near: -0.1,
+                z_far: 16.0,
+                vertical_size: 2.0,
+            }))
+            .build(&mut scene.graph);
+
+        let mut material = Material::standard_2d();
+        material
+            .set_property(
+                &ImmutableString::new("diffuseTexture"),
+                PropertyValue::Sampler {
+                    value: Some(resource_manager.request::<Texture>("examples/Crate.png")),
+                    fallback: Default::default(),
+                },
+            )
+            .unwrap();
+        let material = MaterialResource::new_ok(Default::default(), material);
 
         // Add some sprites.
         for y in 0..10 {
             for x in 0..10 {
-                let sprite_size = 64.0;
-                let spacing = 5.0;
-                SpriteBuilder::new(
+                let sprite_size = 0.35;
+                let spacing = 0.1;
+                RectangleBuilder::new(
                     BaseBuilder::new().with_local_transform(
                         TransformBuilder::new()
-                            .with_position(Vector2::new(
-                                100.0 + x as f32 * (sprite_size + spacing),
-                                100.0 + y as f32 * (sprite_size + spacing),
+                            .with_local_position(Vector3::new(
+                                0.1 + x as f32 * (sprite_size + spacing),
+                                0.1 + y as f32 * (sprite_size + spacing),
+                                0.0, // Keep Z at zero.
                             ))
+                            .with_local_scale(Vector3::new(sprite_size, sprite_size, f32::EPSILON))
                             .build(),
                     ),
                 )
-                .with_texture(resource_manager.request_texture("examples/data/starship.png", None))
-                .with_size(sprite_size)
+                .with_material(material.clone())
                 .build(&mut scene.graph);
             }
         }
 
         // Add some lights.
-        PointLightBuilder::new(BaseLightBuilder::new(
-            BaseBuilder::new().with_local_transform(
-                TransformBuilder::new()
-                    .with_position(Vector2::new(300.0, 200.0))
-                    .build(),
-            ),
-        ))
-        .with_radius(200.0)
+        PointLightBuilder::new(
+            BaseLightBuilder::new(
+                BaseBuilder::new().with_local_transform(
+                    TransformBuilder::new()
+                        .with_local_position(Vector3::new(2.5, 2.5, 0.0))
+                        .build(),
+                ),
+            )
+            .with_scatter_enabled(false),
+        )
+        .with_radius(1.0)
         .build(&mut scene.graph);
 
-        let spot_light = SpotLightBuilder::new(BaseLightBuilder::new(
-            BaseBuilder::new().with_local_transform(
-                TransformBuilder::new()
-                    .with_position(Vector2::new(500.0, 400.0))
-                    .build(),
-            ),
-        ))
-        .with_radius(200.0)
+        let spot_light = SpotLightBuilder::new(
+            BaseLightBuilder::new(
+                BaseBuilder::new().with_local_transform(
+                    TransformBuilder::new()
+                        .with_local_position(Vector3::new(3.0, 1.0, 0.0))
+                        .build(),
+                ),
+            )
+            .with_scatter_enabled(false),
+        )
+        .with_distance(2.0)
         .build(&mut scene.graph);
 
         Self {
@@ -93,21 +146,80 @@ struct InputController {
 
 struct Game {
     input_controller: InputController,
-    scene: Handle<Scene2d>,
+    scene: Handle<Scene>,
     camera: Handle<Node>,
     spot_light: Handle<Node>,
-    debug_text: Handle<UiNode>,
 }
 
-impl GameState for Game {
-    fn init(engine: &mut GameEngine) -> Self
-    where
-        Self: Sized,
-    {
-        // Create test scene.
-        let loader = SceneLoader::load_with(engine.resource_manager.clone());
+impl Plugin for Game {
+    fn update(&mut self, context: &mut PluginContext) {
+        let mut offset = Vector3::default();
+        if self.input_controller.move_forward {
+            offset.y += 1.0
+        }
+        if self.input_controller.move_backward {
+            offset.y -= 1.0
+        }
+        if self.input_controller.move_left {
+            offset.x += 1.0
+        }
+        if self.input_controller.move_right {
+            offset.x -= 1.0
+        }
 
-        Self {
+        let graph = &mut context.scenes[self.scene].graph;
+
+        if let Some(offset) = offset.try_normalize(f32::EPSILON) {
+            graph[self.camera]
+                .local_transform_mut()
+                .offset(offset.scale(0.1));
+        }
+
+        let local_transform = graph[self.spot_light].local_transform_mut();
+        let new_rotation = **local_transform.rotation()
+            * UnitQuaternion::from_euler_angles(0.0, 0.0, 1.0f32.to_radians());
+        local_transform.set_rotation(new_rotation);
+    }
+
+    fn on_os_event(&mut self, event: &Event<()>, _context: PluginContext) {
+        if let Event::WindowEvent {
+            event: WindowEvent::KeyboardInput { event: input, .. },
+            ..
+        } = event
+        {
+            if let PhysicalKey::Code(code) = input.physical_key {
+                match code {
+                    KeyCode::KeyW => {
+                        self.input_controller.move_forward = input.state == ElementState::Pressed
+                    }
+                    KeyCode::KeyS => {
+                        self.input_controller.move_backward = input.state == ElementState::Pressed
+                    }
+                    KeyCode::KeyA => {
+                        self.input_controller.move_left = input.state == ElementState::Pressed
+                    }
+                    KeyCode::KeyD => {
+                        self.input_controller.move_right = input.state == ElementState::Pressed
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }
+}
+
+struct GameConstructor;
+
+impl PluginConstructor for GameConstructor {
+    fn create_instance(
+        &self,
+        _override_scene: Option<&str>,
+        context: PluginContext,
+    ) -> Box<dyn Plugin> {
+        // Create test scene.
+        let loader = SceneLoader::load_with(context.resource_manager.clone());
+
+        Box::new(Game {
             // Create input controller - it will hold information about needed actions.
             input_controller: InputController {
                 move_forward: false,
@@ -118,74 +230,22 @@ impl GameState for Game {
             // Add scene to engine - engine will take ownership over scene and will return
             // you a handle to scene which can be used later on to borrow it and do some
             // actions you need.
-            scene: engine.scenes2d.add(loader.scene),
+            scene: context.scenes.add(loader.scene),
             camera: loader.camera,
             spot_light: loader.spot_light,
-            // Create simple user interface that will show some useful info.
-            debug_text: TextBuilder::new(WidgetBuilder::new())
-                .build(&mut engine.user_interface.build_ctx()),
-        }
-    }
-
-    fn on_tick(&mut self, engine: &mut GameEngine, _dt: f32, _: &mut ControlFlow) {
-        let mut offset = Vector2::default();
-        if self.input_controller.move_forward {
-            offset.y -= 10.0
-        }
-        if self.input_controller.move_backward {
-            offset.y += 10.0
-        }
-        if self.input_controller.move_left {
-            offset.x -= 10.0
-        }
-        if self.input_controller.move_right {
-            offset.x += 10.0
-        }
-
-        let graph = &mut engine.scenes2d[self.scene].graph;
-
-        if let Some(offset) = offset.try_normalize(f32::EPSILON) {
-            graph[self.camera].local_transform_mut().offset(offset);
-        }
-
-        graph[self.spot_light]
-            .local_transform_mut()
-            .turn(10.0f32.to_radians());
-
-        engine.user_interface.send_message(TextMessage::text(
-            self.debug_text,
-            MessageDirection::ToWidget,
-            format!("Example - 2D\n{}", engine.renderer.get_statistics()),
-        ));
-    }
-
-    fn on_window_event(&mut self, _engine: &mut GameEngine, event: WindowEvent) {
-        if let WindowEvent::KeyboardInput { input, .. } = event {
-            // Handle key input events via `WindowEvent`, not via `DeviceEvent` (#32)
-            if let Some(key_code) = input.virtual_keycode {
-                match key_code {
-                    VirtualKeyCode::W => {
-                        self.input_controller.move_forward = input.state == ElementState::Pressed
-                    }
-                    VirtualKeyCode::S => {
-                        self.input_controller.move_backward = input.state == ElementState::Pressed
-                    }
-                    VirtualKeyCode::A => {
-                        self.input_controller.move_left = input.state == ElementState::Pressed
-                    }
-                    VirtualKeyCode::D => {
-                        self.input_controller.move_right = input.state == ElementState::Pressed
-                    }
-                    _ => (),
-                }
-            }
-        }
+        })
     }
 }
 
 fn main() {
-    Framework::<Game>::new()
-        .unwrap()
-        .title("Example - 2D")
-        .run();
+    let mut executor = Executor::from_params(
+        EventLoop::new().unwrap(),
+        GraphicsContextParams {
+            window_attributes: Default::default(),
+            vsync: true,
+            msaa_sample_count: None,
+        },
+    );
+    executor.add_plugin_constructor(GameConstructor);
+    executor.run()
 }
